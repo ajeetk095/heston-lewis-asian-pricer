@@ -1,38 +1,50 @@
-import sys, os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from utils.ui import *
-setup("AI Assistant", "🤖")
-st.title("AI Assistant – Ask the Model")
-if not AI_ON():
-    st.info("The AI assistant is optional and switched off because no OPENROUTER_API_KEY is configured. Everything required by the assignment works without it. Add the key in Streamlit secrets to enable it.")
-    st.stop()
-st.warning("Assistant responses are not professional or investment advice.")
+
+setup("AI Assistant + Disclaimer", "🤖")
+st.title("AI Assistant & Risk Disclaimer")
 ensure()
-SUG = ["Explain the Lewis formula in plain language", "Interpret my latest pricing result", "How can I improve the calibration?", "What is SM's price and VIX right now?", "Latest news on SM Energy"]
-ss.setdefault("chat", [])
-c = st.columns(len(SUG)); pick = None
-for i, s in enumerate(SUG):
-    if c[i].button(s, key=f"s{i}"): pick = s
-q = st.chat_input("Ask about the project, the app or the market", max_chars=MAX_AI_CHARS) or pick
-q = clip(q, MAX_AI_CHARS) if q else q
-for m in ss.chat: st.chat_message(m["role"]).write(m["content"])
-def tools(text):
-    t = text.lower(); out = {}
-    try:
-        if any(w in t for w in ("price","spot","now","today","trading","sm ")): out["spot"] = ld.spot()
-        if any(w in t for w in ("vix","market","s&p","volatil","condition")): out["market"] = ld.market_context()
-        if any(w in t for w in ("rate","fred","treasury","discount")): out["risk_free"] = ld.risk_free()
-        if "news" in t or "headline" in t: out["news"] = ld.news()
-        if any(w in t for w in ("chain","strike","skew","smile","option")):
-            e = ld.expiries(); out["expiries"] = e[:6]; out["chain_head"] = ld.chain(e[0]).head(12).to_dict("records") if e else []
-    except Exception as e: out["fetch_error"] = f"{type(e).__name__}: {e}"
-    return out
-if q:
-    ok, why = ai_allowed()
-    if not ok: st.warning(why); st.stop()
-    st.chat_message("user").write(q); ss.chat.append({"role": "user", "content": q})
-    with st.spinner("Fetching live data…"): fetched = tools(q)
-    sys_ = SYS + f"\nAPP STATE: {base_context('AI Assistant')}\nLIVE DATA: {live_ctx()}\nON-DEMAND FETCH: {json.dumps(fetched, default=str)[:4000]}"
-    msgs = [{"role": "system", "content": sys_}] + ss.chat[-8:]
-    with st.chat_message("assistant"): out = st.write_stream(orc.stream_chat(msgs, ss.model_id))
-    ss.chat.append({"role": "assistant", "content": out})
-if ss.chat and st.button("Clear chat"): ss.chat = []; st.rerun()
+
+st.warning(DISC)
+st.markdown("This assistant combines the live Yahoo Finance snapshot, the app's Heston/Heston–Bates results, and the visitor's own parameters. It does not execute trades or guarantee outcomes.")
+
+if not AI_ON():
+    st.info("AI is switched off. Add OPENROUTER_API_KEY to Streamlit secrets or the OPENROUTER_API_KEY environment variable. The page remains available and no key is required for assignment calculations.")
+else:
+    ss.setdefault("chat", [])
+    suggestions = [
+        "Analyse the current market and model situation",
+        "Give recommendations for a retail investor",
+        "Give recommendations for a company treasury",
+        "Give recommendations for a professional investor",
+        "Explain the main risks and data limitations",
+    ]
+    chosen = st.pills("Suggested questions", suggestions, selection_mode="single")
+    for message in ss.chat:
+        st.chat_message(message["role"]).write(message["content"])
+
+    question = st.chat_input("Ask about the live situation, model outputs or risk")
+    if chosen and not question:
+        question = chosen
+
+    if question:
+        ok, why = ai_allowed()
+        if not ok:
+            st.warning(why)
+        else:
+            question = clip(question, MAX_AI_CHARS)
+            ss.chat.append({"role": "user", "content": question})
+            st.chat_message("user").write(question)
+            context = base_context("AI Assistant + Disclaimer", {"live_context": ss.get("home_live_context")})
+            live = live_ctx()
+            messages = [{"role": "system", "content": SYS + f"\nAPP STATE: {context}\nLIVE DATA: {live}"}] + ss.chat[-8:]
+            with st.chat_message("assistant"):
+                answer = st.write_stream(orc.stream_chat(messages))
+            ss.chat.append({"role": "assistant", "content": answer})
+
+    if ss.chat:
+        if st.button("Clear conversation"):
+            ss.chat = []
+            st.rerun()

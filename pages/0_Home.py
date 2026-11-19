@@ -1,49 +1,120 @@
-import sys, os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import datetime as dt
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+
 from utils.ui import *
-setup('Home', '🏠')
-R_ = get_results(); ensure()
-s1, s2, s3 = R_['step1c'], R_['step2c'], R_['step3b']; put = s2['models'][s2['headline']]['mc']
-st.markdown(hero("SM Energy: Heston, Bates, Asian & put pricing with CIR rate scenarios",
-    "MScFE 622 Group Work Project 1 – calibration (Lewis 2001, Carr–Madan 1999), Monte Carlo pricing and Euribor scenarios, with notebook and report.",
-    ["Heston", "Bates jumps", "Lewis & Carr–Madan", "Asian MC", "CIR / Euribor"]), unsafe_allow_html=True)
-k = st.columns(4)
-for col, (l, v, sub) in zip(k, [
-    ("Asian call 20d ATM – fair", f"${s1['qe']['price']:.2f}", "Monte Carlo, S0 in average"),
-    ("Asian call – client pays", f"${s1['qe']['client']:.2f}", "fair price + 4% fee"),
-    (f"Put 70d K=${s2['K']:.2f} – client", f"${put['client']:.2f}", f"fair ${put['price']:.2f}"),
-    ("12M Euribor in 1y", f"{s3['expected']:.2%}", f"{(s3['expected']-s3['current'])*1e4:+.0f} bp vs today")]):
-    col.markdown(kpi(l, v, sub), unsafe_allow_html=True)
-st.write("")
-c1, c2 = st.columns([3, 2])
-with c1:
-    fig = go.Figure()
-    fig.add_bar(name="Fair price", x=["Asian call 20d", "Put 70d"], y=[s1['qe']['price'], put['price']])
-    fig.add_bar(name="Client pays (+4%)", x=["Asian call 20d", "Put 70d"], y=[s1['qe']['client'], put['client']])
-    fig.update_layout(barmode="group", title="Fair price vs client price ($)", height=330)
-    st.plotly_chart(fig, width="stretch")
-with c2:
-    lo, hi = s3['conf']['0.95']
-    f2 = go.Figure(go.Indicator(mode="number+gauge", value=s3['expected']*100, number=dict(suffix="%", valueformat=".2f"),
-        gauge=dict(shape="bullet", axis=dict(range=[0, max(10, hi*100+1)]), bar=dict(color=ACCENT),
-                   steps=[dict(range=[lo*100, hi*100], color="rgba(124,140,255,.35)")]),
-        title=dict(text="12M Euribor in 1 year<br><span style='font-size:.75em'>bar = expected, band = 95% range</span>")))
-    f2.update_layout(height=330); st.plotly_chart(f2, width="stretch")
-st.caption(f"95% range: {lo:.2%} – {hi:.2%}. Spot $232.90, r = 1.50%, 250 trading days/year.")
-st.warning("Data caveat: the supplied calls and puts violate put–call parity (up to ≈$3 at 60 days), so every calibration carries an irreducible error and individual Heston/Bates parameters are weakly identified. Prices are robust; parameters are not.")
-st.subheader("Where each requirement of the brief is answered")
-steps = [("Step 1a – Heston + Lewis", "15 days: parameters, process, fit graphs.", "Assignment Tasks → 1a"),
-         ("Step 1b – Heston + Carr–Madan", "Why the parameters are (not) similar.", "Assignment Tasks → 1b"),
-         ("Step 1c – Asian call", "ATM 20d, Monte Carlo, 4% fee, plain-language note.", "Assignment Tasks → 1c"),
-         ("Step 2 – Bates & put", "60d Bates with both methods; 70d put at 95%.", "Assignment Tasks → 2a–2c"),
-         ("Step 3 – CIR & Euribor", "Cubic-spline weekly curve, 100,000 paths, pricing impact.", "Assignment Tasks → 3a, 3b"),
-         ("Step 4 – Deliverables", "Notebook + HTML zip and answers-only PDF.", "Research Report page")]
-for row in (steps[:3], steps[3:]):
-    cols = st.columns(3)
-    for col, (t, d, w) in zip(cols, row):
-        col.markdown(card(t, f"{d}  →  {w}", n=steps.index((t, d, w)) + 1), unsafe_allow_html=True)
-    st.write("")
-c = st.columns(4)
-for col, (pth, lab, ic) in zip(c, [("pages/2_Assignment_Tasks.py", "Assignment answers", "📝"), ("pages/8_Research_Report.py", "Report & downloads", "📄"),
-                                   ("pages/1_Live_Simulation.py", "Live pricing sandbox", "📈"), ("pages/14_Roadmap.py", "Roadmap & suggestions", "🧭")]):
-    with col: plink(pth, lab, ic)
-ai_panel("Home", None, ["What does this app do?", "Give me the headline result in two sentences", "Where should an investor start?"])
+
+setup("Home", "🏠")
+R_ = get_results()
+ensure()
+
+st.markdown(hero("SM Energy: live market and model dashboard",
+                 "Compare Yahoo Finance market data with the assignment Heston/Asian-pricing model. Parameters remain editable and all responses include risk context.",
+                 ["Live Yahoo Finance", "5-second refresh", "Interactive Heston", "AI guidance", "Assignment deliverables"]), unsafe_allow_html=True)
+
+controls, data_controls = st.columns([1.25, 1])
+with data_controls:
+    st.subheader("Live market controls")
+    ticker = st.text_input("Yahoo Finance ticker", value="SM", max_chars=12).strip().upper() or "SM"
+    refresh_seconds = st.number_input("Refresh interval (seconds)", min_value=5, max_value=3600, value=5, step=5)
+
+@st.fragment(run_every=refresh_seconds)
+def market_strip(ticker):
+    try:
+        context = ld.market_snapshot(ticker)
+        cols = st.columns(4)
+        cards = [
+            (f"{ticker} spot", context["spot"], "Live/close price"),
+            ("1-day change", f"{context['change_pct']:+.2f}%" if context['change_pct'] is not None else "N/A", "Latest session"),
+            ("SPX", context["spx"], "Market benchmark"),
+            ("VIX", context["vix"], "Market volatility"),
+        ]
+        for col, (label, value, detail) in zip(cols, cards):
+            displayed = f"${value:.2f}" if isinstance(value, float) and label != "VIX" else (f"{value:.2f}" if isinstance(value, float) else str(value))
+            col.metric(label, displayed, detail)
+        st.caption(f"Last refreshed: {dt.datetime.now().strftime('%H:%M:%S')} · Source: Yahoo Finance via yfinance")
+        st.session_state["home_live_context"] = context
+    except Exception:
+        st.warning("Live market data is temporarily unavailable. The assignment dataset remains available below.")
+
+st.subheader("Side-by-side market view")
+left, right = st.columns(2)
+with left:
+    st.markdown("### Live market situation")
+    market_strip(ticker)
+
+with right:
+    st.markdown("### Interactive model situation")
+    ensure()
+    p = ss.p
+    p_cols = st.columns(5)
+    limits = [(1e-3, 1.0), (1e-2, 8.0), (1e-3, 1.0), (1e-2, 2.0), (-.99, .99)]
+    new_p = tuple(p_cols[i].number_input(n, min_value=limits[i][0], max_value=limits[i][1],
+                                        value=float(np.clip(p[i], *limits[i])), format="%.4f", key="home_"+n)
+                  for i, n in enumerate(PN))
+    ss.p = new_p
+
+    ic = st.columns(3)
+    spot = ic[0].number_input("Spot", 1.0, 5000.0, float(ld.safe_spot(ticker)), key="home_spot")
+    days = ic[1].number_input("Horizon (days)", 1, 750, 20, key="home_days")
+    rate = ic[2].number_input("Risk-free rate", -0.05, 0.25, R_DEMO, format="%.4f", key="home_rate")
+    T = days / 250
+
+    with heavy("home simulation"):
+        vanilla = float(model_price(spot, spot, T, rate, 0.0, new_p, "C")[0])
+        asian, se, ci = asian_call_qe(spot, spot, T, rate, 0.0, new_p, int(days), mc_paths(100_000, int(days)))
+
+    st.metric("ATM Asian call — fair", f"${asian:.4f}", f"95% CI [${ci[0]:.2f}, ${ci[1]:.2f}]")
+    st.metric("ATM Asian call — client", f"${asian*1.04:.4f}", "4% fee")
+    ss.last = {"ticker": ticker, "spot": spot, "days": days, "rate": rate,
+               "vanilla": vanilla, "asian": asian, "fee_client": asian*1.04,
+               "confidence_95": ci}
+
+st.divider()
+st.subheader("Audience guidance")
+audience = st.segmented_control("Recommendation audience", ["Retail investor", "Investor", "Company"], default="Investor")
+context = ss.get("home_live_context", {})
+market_signal = "No live quote available"
+if context:
+    market_signal = "Live quote available" if context.get("spot") is not None else "Live quote unavailable"
+
+if audience == "Retail investor":
+    guidance = "Consider whether averaging over 20–750 days matches the retail objective. Compare the Asian price with a vanilla call, size positions conservatively, and do not treat model output as a buy/sell signal."
+elif audience == "Company":
+    guidance = "Use the model for treasury scenario planning and hedge-structure comparison. Validate liquidity, counterparty exposure, transaction costs, and hedge ratios before implementation."
+else:
+    guidance = "Review the model price, confidence interval, live market context, and assumptions together. The asymmetric parameters and weakly identified Heston coefficients require stress testing."
+
+st.info(f"**{audience}:** {guidance}\n\n**Market status:** {market_signal}. The live and model panels use independently sourced inputs and must not be interpreted as forecasts.")
+
+st.divider()
+st.subheader("AI market assistant + disclaimer")
+st.warning(DISC)
+if not AI_ON():
+    st.info("AI is in standby mode. Configure OPENROUTER_API_KEY and the Baidu ERNIE model in Streamlit secrets to activate it. No key is stored in this project.")
+else:
+    ai_panel("Home", {"last": ss.get("last")}, [
+        "Analyse the live market situation and the model output",
+        "Give separate guidance for retail, investor and company users",
+        "What are the three biggest risks in today's result?",
+    ])
+
+st.divider()
+st.subheader("Assignment results")
+s1, s2, s3 = R_["step1c"], R_["step2c"], R_["step3b"]
+put = s2["models"][s2["headline"]]["mc"]
+mc = st.columns(4)
+for col, (label, value, detail) in zip(mc, [
+    ("Asian call fair", f"${s1['qe']['price']:.2f}", "20-day ATM Heston/Monte Carlo"),
+    ("Asian call client", f"${s1['qe']['client']:.2f}", "Includes 4% fee"),
+    (f"Put 70d K=${s2['K']:.2f}", f"${put['client']:.2f}", "Client price"),
+    ("12M Euribor in 1y", f"{s3['expected']:.2%}", "CIR expected scenario"),
+]):
+    col.metric(label, value, detail)
+
+st.caption("Research and education only — not financial, investment, legal or professional advice.")
